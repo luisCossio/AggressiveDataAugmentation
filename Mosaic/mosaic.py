@@ -1,12 +1,10 @@
 import argparse
+import cv2
 import os
+from tqdm import tqdm
 from numpy import ndarray
 import numpy as np
-import cv2
-
-from PIL import Image
 import Mosaic_DA.dataset_yolo as dy
-import random
 
 
 class Range_value:
@@ -72,7 +70,21 @@ def get_cut_location(range_horizontal, range_vertical):
     return row, col
 
 
-def xywh2xyxy_pixels(bounding_box, image_shape):
+def xywh2xyxy_pixels(bounding_box:np.ndarray, image_shape:tuple):
+    """
+    Function to get format a bounding box from a [xc,yc,w,h] relative format (xc and yx are the center coordinates),
+    to a [x1,y1,x2,y2] absolute pixel format.
+
+    Parameters
+    ----------
+    bounding_box: original bounding_box
+    image_shape: Tuple of shape. EX:(1280,720,3)
+
+    Returns
+        Resulting bounding box
+    -------
+
+    """
     # image_shape = np.flip(image_shape[:,0])
     x_pos1 = (bounding_box[:, 1] - bounding_box[:, 3] / 2) * image_shape[1]
     x_pos2 = (bounding_box[:, 1] + bounding_box[:, 3] / 2) * image_shape[1]
@@ -147,7 +159,7 @@ class mosaic_generator:
         size_dataset_valid_images = len(self.loader)
         valid_images_indexes = [i for i in range(size_dataset_valid_images)]
         np.random.shuffle(valid_images_indexes)
-        for i in range(new_dataset_size):
+        for i in tqdm(range(new_dataset_size)):
             img, annotations = self.get_new_image(valid_images_indexes, i)
             self.save_image_mosaic(img, annotations, i, ext)
 
@@ -185,12 +197,12 @@ class mosaic_generator:
         img = np.empty([self.sizes[0], self.sizes[1], 3], dtype=np.uint8)
 
         cut_locations = get_cut_location(range_horizontal4, range_vertical4)
-
         annotations = self.paste_image(img, indexes_found[3],
                                        cut_locations, [], corner="BR")
 
         annotations = self.paste_image(img, indexes_found[2],
                                        cut_locations, annotations, corner="TR")
+
         row = np.random.choice(range_vertical2)
         cut_locations = (row, cut_locations[1])
 
@@ -546,13 +558,13 @@ class mosaic_generator:
         return (0, col)
 
     def right(self, col):
-        return (col, self.sizes[1] - 1)
+        return (col, self.sizes[1])
 
     def upper(self, row):
         return (0, row)
 
     def lower(self, row):
-        return (row, self.sizes[0] - 1)
+        return (row, self.sizes[0])
 
     def paste_image(self, img, index_image, position, annotations, corner="TL"):
         """
@@ -569,9 +581,9 @@ class mosaic_generator:
         -------
 
         """
-        img_mosaic, bb = self.loader[index_image]
-        shape_mosaic = img_mosaic.shape
-        x_pos1, x_pos2, y_pos1, y_pos2 = xywh2xyxy_pixels(bb, img_mosaic.shape)
+        img_donator, bb = self.loader[index_image]
+        shape_donator = img_donator.shape
+        x_pos1, x_pos2, y_pos1, y_pos2 = xywh2xyxy_pixels(bb, img_donator.shape)
 
         bounding_boxes = np.empty([len(bb), 5], dtype=int);
         bounding_boxes[:, 0] = bb[:, 0];
@@ -579,91 +591,25 @@ class mosaic_generator:
         bounding_boxes[:, 2] = y_pos1;
         bounding_boxes[:, 3] = x_pos2;
         bounding_boxes[:, 4] = y_pos2;
-
-        if corner == 'TL':
-            ranges_x = self.left(position[1])  # absolute location in a (image_size x image_size) image
-            ranges_y = self.upper(position[0])
-
-            range_x_local = np.array(ranges_x)  # location in original image.
-            range_y_local = np.array(ranges_y)
-
-
-        elif corner == "TR":
-            ranges_x = self.right(position[1])
-            ranges_y = self.upper(position[0])
-            range_x_local = shape_mosaic[1] - self.sizes[1] + np.array(ranges_x)
-            if range_x_local[-1] < shape_mosaic[1]:
-                ranges_x = self.right(position[1] + 1)
-                range_x_local = shape_mosaic[1] - self.sizes[1] + np.array(ranges_x)
-
-            bounding_boxes[:, [1, 3]] = self.sizes[1] - shape_mosaic[1] + bounding_boxes[:, [1, 3]]
-            range_y_local = np.array(ranges_y)
-
-        elif corner == 'BL':
+        if "L" in corner:
             ranges_x = self.left(position[1])
-            ranges_y = self.lower(position[0])
             range_x_local = np.array(ranges_x)
-            range_y_local = shape_mosaic[0] - self.sizes[0] + np.array(ranges_y)
-            if range_y_local[1] < shape_mosaic[0]:
-                ranges_y = self.lower(position[0] + 1)
-                range_y_local = shape_mosaic[0] - self.sizes[0] + np.array(ranges_y)
-            bounding_boxes[:, [2, 4]] = self.sizes[0] - shape_mosaic[0] + bounding_boxes[:, [2, 4]]
-
+            if "T" in corner:
+                ranges_y = self.upper(position[0])
+                range_y_local = np.array(ranges_y)
+            else:
+                ranges_y = self.lower(position[0])
+                range_y_local = shape_donator[0] - self.sizes[0] + np.array(ranges_y)
         else:
             ranges_x = self.right(position[1])
-            ranges_y = self.lower(position[0])
-            range_x_local = shape_mosaic[1] - self.sizes[1] + np.array(ranges_x)
-            range_y_local = shape_mosaic[0] - self.sizes[0] + np.array(ranges_y)
-
-            bounding_boxes[:, [1, 3]] = self.sizes[1] - shape_mosaic[1] + bounding_boxes[:, [1, 3]]
-            bounding_boxes[:, [2, 4]] = self.sizes[0] - shape_mosaic[0] + bounding_boxes[:, [2, 4]]
-
-            if range_y_local[-1] < shape_mosaic[0]:
-                ranges_y = self.lower(position[0] + 1)
-                range_y_local = shape_mosaic[0] - self.sizes[0] + np.array(ranges_y)
-            if range_x_local[-1] < shape_mosaic[1]:
-                ranges_x = self.right(position[1] + 1)
-                range_x_local = shape_mosaic[1] - self.sizes[1] + np.array(ranges_x)
-
-        # img_shape1 = img_mosaic[range_y_local[0]:range_y_local[1], range_x_local[0]:range_x_local[1], :].shape
-        # img_shape2 = img[ranges_y[0]:(ranges_y[1]), ranges_x[0]:(ranges_x[1]), :].shape
-
-        # if img_shape1[0] != img_shape2[0]:
-        #     print("ERROR: invalid dimensions: \n Image 1: {:d}x{:d} \n Image 2: {:d}x{:d}".format(img_shape1[0],
-        #                                                                                           img_shape1[1],
-        #                                                                                           img_shape2[0],
-        #                                                                                           img_shape2[1]))
-        #
-        #     print("Image index: {:d} \n Image position: {:d}x{:d}".format(index_image, position[0], position[1]))
-        #     print("Name img: ", self.loader.images[index_image])
-        #     print("annotations: ", annotations)
-        #     print("CORNER: {:s}".format(corner))
-        #     print("ranges_x: ", ranges_x)
-        #     print("ranges_y: ", ranges_y)
-        #     print("local ranges_x: ", range_x_local)
-        #     print("local ranges_y: ", range_y_local)
-        #     print("img mosaic shape: {:d}x{:d}".format(img_mosaic.shape[0], img_mosaic.shape[1]))
-        #     img_mosaic, bb = self.loader[index_image]
-        #     print("img mosaic shape: {:d}x{:d}".format(img_mosaic.shape[0], img_mosaic.shape[1]))
-        #
-        # elif img_shape1[1] != img_shape2[1]:
-        #     print("ERROR: invalid dimensions: \n Image 1: {:d}x{:d} \n Image 2: {:d}x{:d}".format(img_shape1[0],
-        #                                                                                           img_shape1[1],
-        #                                                                                           img_shape2[0],
-        #                                                                                           img_shape2[1]))
-        #     print("Image index: {:d} \n Image position: {:d}x{:d}".format(index_image, position[0], position[1]))
-        #     print("Name img: ", self.loader.images[index_image])
-        #     print("annotations: ", annotations)
-        #     print("CORNER: {:s}".format(corner))
-        #     print("ranges_x: ", ranges_x)
-        #     print("ranges_y: ", ranges_y)
-        #     print("local ranges_x: ", range_x_local)
-        #     print("local ranges_y: ", range_y_local)
-        #     print("img mosaic shape: {:d}x{:d}".format(img_mosaic.shape[0], img_mosaic.shape[1]))
-        #     img_mosaic, bb = self.loader[index_image]
-        #     print("img mosaic shape: {:d}x{:d}".format(img_mosaic.shape[0], img_mosaic.shape[1]))
-
-        img[ranges_y[0]:(ranges_y[1]), ranges_x[0]:ranges_x[1], :] = img_mosaic[range_y_local[0]:range_y_local[1],
+            range_x_local = shape_donator[1] - self.sizes[1] + np.array(ranges_x)
+            if "T" in corner:
+                ranges_y = self.upper(position[0])
+                range_y_local = np.array(ranges_y)
+            else:
+                ranges_y = self.lower(position[0])
+                range_y_local = shape_donator[0] - self.sizes[0] + np.array(ranges_y)
+        img[ranges_y[0]:(ranges_y[1]), ranges_x[0]:ranges_x[1], :] = img_donator[range_y_local[0]:range_y_local[1],
                                                                      range_x_local[0]:range_x_local[1], :]
 
         annotations = self.add_annotations(annotations, bounding_boxes, position, corner)
@@ -751,17 +697,20 @@ def create_dataset_mosaic(path_dataset, path_to_save, ratio_images=0.5, ext='.jp
     mosaic.create_dataset(ratio_images, ext)
 
 
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--path-dataset', type=str, default='', help='path to original dataset')
     parser.add_argument('--path-dataset-saving', type=str, default='', help='path to dataset to save to')
     parser.add_argument('--img-size', nargs='+', type=int, default=[1024, 1024], help='train,test sizes')
-    parser.add_argument('--ratio', type=float, default=0.01, help='Ratio of size of new dataset in comparison'
+    parser.add_argument('--ratio', type=float, default=2.0, help='Ratio of size of new dataset in comparison'
                                                                  'to the original')
     parser.add_argument('--ext', type=str, default='png',choices=['png','jpg'], help='Extension to which save the files.')
 
     opt = parser.parse_args()
-    np.random.seed(3396)
+    np.random.seed(3)
     # opt.path_dataset = '/home/luis/datasets/wider/wider_val'  # 12880
     # opt.path_dataset_saving = '/home/luis/datasets/wider/wider_val2'
     # opt.path_dataset_saving = '/home/luis/datasets/wider/mosaic_wider_face'
@@ -770,3 +719,4 @@ if __name__ == '__main__':
     opt.path_dataset_saving = '/home/luis/datasets/minneapple/train2'
     opt.img_size = [1280, 720]
     create_dataset_mosaic(opt.path_dataset, opt.path_dataset_saving, opt.ratio, ext=opt.ext,size=opt.img_size)
+
