@@ -4,8 +4,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from pycocotools.coco import COCO
-import Copy_paste.annotations as an
-
+import CopyPaste.annotations as an 
 
 def check_folder(path):
     if not os.path.exists(path):
