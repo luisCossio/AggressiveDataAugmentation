@@ -2,9 +2,11 @@ import os
 import cv2
 import argparse
 import numpy as np
+# from PIL import Image
 from tqdm import tqdm
 from pycocotools.coco import COCO
-import CopyPaste.annotations as an 
+import annotations as an
+
 
 def check_folder(path):
     if not os.path.exists(path):
@@ -20,7 +22,7 @@ class distribution_gaussian:
         self.mean = parameters_gaussian[:, 0]
         self.std = parameters_gaussian[:, 1]
 
-    def __call__(self, value=1.0):
+    def __call__(self, value=1.0) -> np.ndarray:
         result = np.random.normal(self.mean * value, np.abs(value) * self.std)
         # result = np.clip(result, self.mean*value - np.abs(value)*self.std * 2.5, self.mean*value  + np.abs(value)*self.std * 2.5)  # Clipping just to
         # maintain values in certain range
@@ -35,7 +37,7 @@ class distribution_uniform:
         self.lower = parameters_uniform[:, 0]
         self.upper = parameters_uniform[:, 1]
 
-    def __call__(self, value: float):
+    def __call__(self, value: float) -> np.ndarray:
         return (np.random.uniform(self.lower * value, self.upper * value))
 
 
@@ -136,12 +138,14 @@ def fix_mask(mask):
     shape = mask.shape
     new_mask = mask.copy()
 
+    # unique_values = np.unique(mask)
     indices1 = np.repeat(np.arange(1, shape[1] - 1).reshape([1, -1]), shape[0] - 2, axis=0)  # Get no borders indices
     indices2 = np.arange(shape[1], shape[1] * (shape[0] - 1), shape[1]).reshape([-1, 1])  # Get no borders indices
 
     indices = indices1 + indices2
     indices = indices.reshape([-1])  # Get no borders indices
     np.random.shuffle(indices)
+
     for i, pos in enumerate(indices):
         row = pos // shape[1]
         col = pos % shape[1]
@@ -159,6 +163,8 @@ def fix_mask(mask):
             range_col2 = [col2 - margin_border, shape[1]]
             range_row2 = [max(0, i - margin_border), min(shape[0], i + margin_border)]
             update_mask_border(new_mask, range_row2, range_col2, i, col2)
+        # locs[i, col1] += 1  # DELETE
+        # locs[i, col2] += 1  # DELETE
     row1 = 0
     row2 = shape[0] - 1
 
@@ -199,11 +205,53 @@ def get_shape_cuts(pos: tuple, shape_base: tuple, shape_cut: tuple):
     return positions_base, positions_cut
 
 
+def relative_sampling(annotations: list, range_samples: list):
+    """
+    Function to define a random number of objects to add to a base image, based on the number of instances in the
+    base image
+    Parameters
+    ----------
+    annotations: Annotations of base image
+    range_samples: Range of samples.
+
+    Returns
+    -------
+
+    """
+    samples_in_image = len(annotations)
+    min_samples = round(range_samples[0] * samples_in_image)
+    min_samples = max(min_samples, 1)  # at least 1 copy pasted segment.
+    max_samples = round(range_samples[1] * samples_in_image)
+    max_samples = max(max_samples, min_samples + 1)  # in case of same value
+    n_samples2add = np.random.randint(min_samples, max_samples)
+
+    n_samples2add = min(255 - samples_in_image, n_samples2add)  # max number of instances = 256
+    return n_samples2add
+
+
+def absolute_sampling(annotations, range_samples):
+    """
+    Function to define a random number of objects to add to a base image
+    Parameters
+    ----------
+    annotations
+    range_samples
+
+    Returns
+    -------
+
+    """
+    samples_in_image = len(annotations)
+    n_samples2add = np.random.randint(range_samples[0], range_samples[1] + 1)
+    n_samples2add = min(255 - samples_in_image, n_samples2add)  # max number of instances = 256
+    return n_samples2add
+
+
 class dataset_manager:
     def __init__(self, path_dataset_images: str, path_annotations: str, distribution='gaussian',
                  param_scale=[1.0, 0.4], param_translate=[[0.5, 0.5], [0.4, 0.4]],
                  grey_color=(114, 114, 114), invalid_cats=[],
-                 min_size=9):
+                 min_size=9, relative_augmentation=False):
 
         self.coco = COCO(path_annotations)
         self.catIds = self.coco.getCatIds()
@@ -218,16 +266,33 @@ class dataset_manager:
 
         #######  TRANSFORMATION PARAMETERS  #######
         assert (distribution in ['gaussian', 'uniform']), "Unvalid distribution: {}".format(distribution)
+
+        if relative_augmentation:
+            self.sampler = relative_sampling
+            self.get_pasting_location = self.relative_location_generation
+        else:
+            self.sampler = absolute_sampling
+            self.get_pasting_location = self.absolute_location_generation
+
         if distribution == 'gaussian':
             self.position_generator = distribution_gaussian(param_translate)
-            self.new_scale_generator = distribution_gaussian(param_scale)
+            if param_scale is None:
+                self.new_scale_generator = None
+            else:
+                self.new_scale_generator = distribution_gaussian(param_scale)
 
         else:
             self.position_generator = distribution_uniform(param_translate)
-            self.new_scale_generator = distribution_uniform(param_scale)
+            if param_scale is None:
+                self.new_scale_generator = None
+            else:
+                self.new_scale_generator = distribution_uniform(param_scale)
 
         self.padding = grey_color
         self.min_size = min_size
+
+        # self.locations_map = np.zeros([1280,720],dtype=np.uint8) # DELETE
+        # self.verbose = False  # DELETE
 
     def build_mask(self, idx: int):
         """
@@ -243,13 +308,16 @@ class dataset_manager:
         img = self.coco.imgs[idx]
         annIds = self.coco.getAnnIds(imgIds=idx)
         anns_img = self.coco.loadAnns(annIds)
+        new_anns = []
         mask_annotations = np.zeros([img['height'], img['width']], dtype=np.uint8)
+        count = 0
         for i in range(len(anns_img)):
             mask = self.coco.annToMask(anns_img[i])
             if not (anns_img[i]['category_id'] in self.invalid_categories):
-                mask_annotations = np.where(mask == 1, i + 1, mask_annotations).astype(dtype=np.uint8)
-
-        return mask_annotations, anns_img
+                count += 1
+                mask_annotations = np.where(mask == 1, count, mask_annotations).astype(dtype=np.uint8)
+                new_anns += [anns_img[i].copy()]
+        return mask_annotations, new_anns
 
     def __len__(self):
         return len(self.images)
@@ -259,7 +327,7 @@ class dataset_manager:
         mask, anns_mask = self.build_mask(index)
         return image, mask, anns_mask
 
-    def create_copy_pasted_masks(self, range_samples: list, modify: bool, img_id: int, ann_id: int):
+    def create_copy_pasted_image(self, range_samples: list, modify: bool, img_id: int, ann_id: int):
         """
         Method to create an image and its corresponding mask and annotations
         Parameters
@@ -273,34 +341,41 @@ class dataset_manager:
         -------
 
         """
-
+        if np.random.uniform() > 0.70:  # DELETE
+            focus_images = [380, 381, 382, 384, 385, 386, 397, 455, 456, 457, 461, 462, 464, 465, 467, 470, 478, 479,
+                            507, 509, 511, 512, 513, 514, 515, 516, 517, 518, 519]
+            random_index = np.random.choice(focus_images)  # DELETE
+        else:  # DELETE
+            random_index = np.random.randint(len(self.images))
         random_index = np.random.randint(len(self.images))
-        image_base, mask_base, anns_base = self[random_index]
-
+        image_base, mask_base, anns_base = self[random_index]  # anns do not include invalid anns (namely background)
+        # print("Image Base: {:d} - {:s} ".format(random_index, self.images[random_index])) # DELETE
         if modify:
             image_base, mask_base = self.transform(image_base, mask_base)
-
-        samples_in_image = len(anns_base)  #
-        n_samples = np.random.randint(range_samples[0], range_samples[1])
-        n_samples_valid = min(255 - samples_in_image, n_samples)  # max number of instances = 256
-
+        # if self.verbose:  # DELETE
+        #     print("Random image base {:d} : {:s}".format(random_index,self.images[random_index]))
+        samples_in_image = len(anns_base)  # N objects
+        n_samples2add = self.sampler(anns_base, range_samples)
         # if n_samples_valid == 0:  # max number of instances is 255 # UNCOMMENT
-        #     return self.create_copy_pasted_masks(n_samples, modify, img_id, ann_id)
-        categories = {}
+        #     return self.create_copy_pasted_masks(n_samples2add, modify, img_id, ann_id)
+        # unique = np.unique(mask_base)  # DELETE
+        # print("N labels: ",len(unique) - 1)  # DELETE
+        categories = {0: 0}
         for i, ann in enumerate(anns_base):
             categories[i + 1] = ann['category_id']
 
         new_image, new_mask = image_base.copy(), mask_base.copy()
-
-        for i in range(n_samples_valid):
+        for i in range(n_samples2add):
             # create new image
             new_image, new_mask, categories = self.add_figure(new_image, new_mask, samples_in_image + 1 + i,
                                                               categories, modify)
-
+            # if True:  # DELETE
+            #     unique = np.unique(new_mask) # DELETE
+            #     print("Samples after: {:d} \n Samples expected {:d}".format(len(unique),
+            #           int(samples_in_image + i + 1)))
         new_mask = fix_mask(new_mask)
-
         new_anns = an.get_new_annotation(new_mask, img_id, ann_id, categories)
-        return new_image, mask_base, new_anns
+        return new_image, new_mask, new_anns
 
     def transform(self, image: np.ndarray, mask: np.ndarray):
         """
@@ -316,10 +391,8 @@ class dataset_manager:
 
         """
         shape = np.array(image.shape)
-
         factor = float(self.new_scale_generator(1)[0])
         image = cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
-
         mask = cv2.resize(mask, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
         shape2 = image.shape
         if shape[0] < shape2[0]:
@@ -327,28 +400,74 @@ class dataset_manager:
 
         elif shape[0] > shape2[0]:
             image, mask = padd_item(image, mask, shape, shape2, self.padding)
+
         return image, mask
+
+    def relative_location_generation(self, shape_img: np.ndarray, mask: np.ndarray, n_instances: int):
+        if n_instances > 0:
+
+            instance1 = np.random.randint(1, n_instances + 1)
+            instance2 = np.random.randint(1, n_instances + 1)
+            pos1 = np.where(mask == instance1)
+            counter = 0  # Some images are invalid with this aproach, due to size modification.
+            while len(pos1[0]) == 0:
+                instance1 = np.random.randint(1, n_instances + 1)
+                pos1 = np.where(mask == instance1)
+                counter += 1
+                if counter > 10: # Default to random location in case not valid object has been found
+                    return self.absolute_location_generation(shape_img, mask, n_instances)
+            pos2 = np.where(mask == instance2)
+            counter = 0
+            while len(pos2[0]) == 0:
+                instance2 = np.random.randint(1, n_instances + 1)
+                pos2 = np.where(mask == instance2)
+
+                counter += 1
+                if counter > 10:
+                    return self.absolute_location_generation(shape_img, mask, n_instances)
+            pos_instance1 = np.array([np.random.choice(pos1[0]), np.random.choice(pos1[1])])
+            pos_instance2 = np.array([np.random.choice(pos2[0]), np.random.choice(pos2[1])])
+            mini_shape_img = shape_img / 4
+            position = (pos_instance1 + pos_instance2) / 2
+            position += self.position_generator(mini_shape_img) - mini_shape_img / 2  # random translation
+            position = np.clip(position, [0, 0], shape_img).astype(dtype=np.int32)
+            return position
+        else:
+            return self.absolute_location_generation(shape_img, mask, n_instances)
+
+    def absolute_location_generation(self, shape_img: np.ndarray, mask: np.ndarray, n_instances: int):
+        return self.position_generator(shape_img)
 
     def add_figure(self, image: np.ndarray, mask: np.ndarray, intensity: int, categories: dict, modify: bool):
         random_index = np.random.randint(len(self.images))
         image_copy, mask_copy, anns_copy = self[random_index]  # sample to copy from
 
         n_segments = len(anns_copy)
-        random_segment = np.random.randint(n_segments)
-        position = self.position_generator(np.array(image.shape)[:2]) # (y,x)
+        if n_segments == 0:
+            return self.add_figure(image, mask, intensity, categories, modify)
+
+        # if self.verbose:  # DELETE
+        #     print("Random image paste {:d} : {:s}".format(random_index,self.images[random_index]))
+        random_segment_idx = np.random.randint(n_segments)
+
+        position = self.get_pasting_location(np.array(image.shape)[:2], mask, intensity - 1)  # (y,x)
+        # print("Image selected Number {:d}, name {:s} ".format(random_segment,self.images[random_index]))  # DELETE
         # get range from the random segment.
-        range_segment, random_segment = self.get_range_segment(mask_copy, anns_copy, random_segment)
+        range_segment, random_segment_idx = self.get_range_segment(mask_copy, anns_copy, random_segment_idx)
         #  range_segment is organized as ((x1,x2),(y1,y2))
         if range_segment[0][0] < self.min_size or range_segment[0][1] < self.min_size:
             return self.add_figure(image, mask, intensity, categories, modify)
 
-        categories[intensity] = anns_copy[random_segment]['category_id']
-        image, mask = self.paste_segment(image, mask, image_copy, mask_copy, random_segment + 1, intensity,
+        categories[intensity] = anns_copy[random_segment_idx]['category_id']
+        image, mask = self.paste_segment(image, mask, image_copy, mask_copy, random_segment_idx + 1, intensity,
                                          pos_paste=position, range_copy=range_segment, modify=modify)
+        # if self.verbose1: # DELETE
+        #     unique = np.unique(mask)
+        #     print("Number of items in mask are: {:d}".format(len(unique)-1))  # DELETE
         return image, mask, categories
 
     def get_range_segment(self, mask: np.ndarray, annotations: list, segment_number: int):
-        if segment_number < 1:
+        if segment_number < 0:
             return ((0, 0), (0, 0)), 1
 
         category_id = annotations[segment_number]['category_id']
@@ -386,14 +505,16 @@ class dataset_manager:
         -------
 
         """
-
         shape1 = image_base.shape
-        if modify:
-            image_donor, mask_donor = self.transform(image_donor[range_copy[0][0]:range_copy[0][1],
-                                                     range_copy[1][0]:range_copy[1][1], :],
-                                                     mask_donor[range_copy[0][0]:range_copy[0][1],
-                                                     range_copy[1][0]:range_copy[1][1]])
-        mask_donor = fix_mask(mask_donor)
+        # if modify:
+        #     image_donor, mask_donor = self.transform(image_donor[range_copy[0][0]:range_copy[0][1],
+        #                                              range_copy[1][0]:range_copy[1][1], :],
+        #                                              mask_donor[range_copy[0][0]:range_copy[0][1],
+        #                                              range_copy[1][0]:range_copy[1][1]])
+        #     mask_donor = fix_mask(mask_donor)
+        # else:
+        image_donor = image_donor[range_copy[0][0]:range_copy[0][1], range_copy[1][0]:range_copy[1][1], :]
+        mask_donor = mask_donor[range_copy[0][0]:range_copy[0][1], range_copy[1][0]:range_copy[1][1]]
         shape2 = image_donor.shape
 
         # get dimensions of a bounding box that cover a random segment in original image
@@ -443,7 +564,8 @@ def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset
     assert range_samples[0] < range_samples[1], "ERROR, INVALID RANGE SAMPLES {:d} > {:d}".format(range_samples[0],
                                                                                                   range_samples[1])
     manager = dataset_manager(path_dataset_img, path_anns, distribution, param_translate=param_distribution,
-                              param_scale=param_scale, invalid_cats=ignore_categories, min_size=min_size)
+                              param_scale=param_scale, invalid_cats=ignore_categories, min_size=min_size,
+                              relative_augmentation=opt.relative_augment)
 
     n_images = round(len(manager) * ratio_dataset)
     path_to_save_images = setup_new_dataset(path_to_save)
@@ -451,20 +573,22 @@ def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset
     images = []
     last_id_img, last_id_ann = manager.get_last_ids()
     path_to_save_anns = os.path.join(path_to_save, name_anns)
+    # check_folder('output/masks')  # DELETE
     last_id_img += 1
+    print("Categories IDS: ",manager.coco.cats)
     for i in tqdm(range(n_images)):
         image_id = i + last_id_img
-        new_img, new_mask, new_annotation = manager.create_copy_pasted_masks(range_samples, modify,
+        # if i == 33: # DELETE
+        #     manager.verbose = True
+        new_img, new_mask, new_annotation = manager.create_copy_pasted_image(range_samples, modify,
                                                                              image_id, last_id_ann + 1)
-
-        name_file = "img_gen_{:04d}.png".format(i)
-
-        if len(new_annotation)>0:
+        name_file = "img_gen_{:04d}{:s}".format(i,opt.ext)
+        if len(new_annotation) > 0:
             last_id_ann = new_annotation[-1]['id']
-
         an.add_new_annotation(new_img, new_annotation, image_id, name_file, images, annotations)
         cv2.imwrite(os.path.join(path_to_save_images, name_file), new_img)
-
+        # if i == 33: # DELETE
+        #     manager.verbose = False
     an.save_new_dataset(path_dataset_img, images, annotations, path_anns, path_to_save_images, path_to_save_anns)
 
 
@@ -491,22 +615,26 @@ if __name__ == '__main__':
     parser.add_argument('--path-dataset', type=str, help='path of the dataset')
     parser.add_argument('--path-annotations', default='/home/dataset/minneapple/annotations/instances_train.json',
                         type=str, help='path of annotation file (.json)')
+
     parser.add_argument('--path-to-save', type=str, default='predictions',
                         help='Path to save files, in a similar arrange as that of the original dataset.')
+
     parser.add_argument('--ratio-dataset', type=float, default=2.00,
                         help='Percentage of images to create, relative to the original dataset size.')
-    parser.add_argument('--n-samples', nargs='+', type=int, default=[3, 21],
-                        help='Number samples to take from other images')
-    parser.add_argument('--distribution', type=str, default='uniform', choices=['gaussian', 'uniform'],
-                        help='Method to distribute copy pasted images around the image.')
 
-    parser.add_argument('--param-distribution', nargs='+', type=float, default=[0.1, 0.9],
+    parser.add_argument('--n-samples', nargs='+', type=int, default=[3, 15],
+                        help='Number samples to take from other images. If ')
+
+    parser.add_argument('--distribution', type=str, default='uniform', choices=['gaussian', 'uniform'],
+                        help='Type of distribution for distribute copy pasted images around the image.')
+
+    parser.add_argument('--param-distribution', nargs='+', type=float, default=[0.0, 1.0],
                         help='Parameters that define the distribution random function. In the case of the uniform'
                              'distribution are the upper and lower locations relative to the image size (e.g. [0.2,0.8]). On the '
                              'other hand, for a gaussian distribution are the values of mean and variance,'
                              'also relative to the image size. e.g.:[0.5,0.25] or [0.5, 0.25, 0.5,0.3]. This one is'
                              'for a 2 dims gaussian distribution, with a different x axis distribution than the y axis.'
-                             'mean_x= 0.5 and std_x = 0.25. ')
+                             'mean_y= 0.5 and std_y = 0.25. ')
 
     parser.add_argument('--param-rescale', nargs='+', type=float, default=[0.9, 1.1],
                         help='Parameters that define the distribution random function. In the case of the uniform'
@@ -516,16 +644,40 @@ if __name__ == '__main__':
                              'This one is for a 2 dims gaussian distribution, with a different x axis distribution '
                              'than the y axis. In this case mean_y= 1 and std_y = 0.25. and mean_x= 1 and std_x = 0.3')
 
-    parser.add_argument('--min-size', type=float, default=15,
+    parser.add_argument('--relative-augment', action='store_true', help='If True it will increase add samples realtive'
+                                                                        'to the number of objects in the base image. '
+                                                                        'Furthermore it will place them near other '
+                                                                        'samples.')
+
+    parser.add_argument('--min-size', type=float, default=10,
                         help='Min width and height dimension of BB')
 
     parser.add_argument('--modify-base', action='store_true', help='Modify the size of the image to copy from.')
     parser.add_argument('--ignore-cat', nargs='+', type=float, default=[0],
                         help='Class categories to not copy-paste. By default ignores only class 0/background.')
 
+    parser.add_argument('--ext', type=str, default='.png',
+                        help='Extension name for the images')
+
     opt = parser.parse_args()
-    np.random.seed(903)
-    opt.distribution = 'gaussian'
+    np.random.seed(60006)
+    data_type = 'train'
+    datasets_path = '/home/luis/datasets/minneapple/'
+    # datasets_path = '/home/luis/2021/COCO/cherry_dataset3/'
+
+    base = os.path.join(datasets_path, data_type)
+    opt.path_dataset = os.path.join(base, 'images')
+    opt.path_to_save = "{:s}17".format(base)
+    opt.path_annotations = os.path.join(datasets_path, 'annotations', 'instances_{:s}.json'.format(data_type))
+    # opt.path_annotations = os.path.join(base, 'instances_{:s}.json'.format(data_type))
+    # opt.param_distribution = [0.5, 0.21, 0.42, 0.18]  # mean and variance in a gaussian distribution
+    # opt.param_distribution = [0.20, 0.66, 0.01, 0.99]  # mean and variance in a uniform distribution
+    opt.param_distribution = [0.01, 0.99, 0.01,
+                              0.99]  # mean and variance in a uniform distribution for relative augmentation ()
+    opt.distribution = 'uniform'
+    # opt.n_samples = [1, 5]
+    opt.n_samples = [0.00, 0.500]
+    opt.relative_augment = True
     if len(opt.param_distribution) == 4:
         opt.param_distribution = np.array([opt.param_distribution[:2], opt.param_distribution[2:]])
     if len(opt.param_distribution) == 2:
@@ -534,14 +686,26 @@ if __name__ == '__main__':
         raise "ERROR: Invalid size for param-distribution. Size must be either 2 or 4 not {:d}".format(len(
             opt.param_distribution))
 
-    opt.param_rescale = [1.05, 0.05]  # mean and variance in a gaussian distribution
-    if len(opt.param_rescale) == 4:
-        opt.param_rescale = np.array([opt.param_rescale[:2], opt.param_rescale[2:]])
-    if len(opt.param_rescale) == 2:
-        opt.param_rescale = np.array(opt.param_rescale)
-    else:
-        raise "ERROR: Invalid size for param-distribution. Size must be either 2 or 4 not {:d}".format(len(
-            opt.param_rescale))
+    # opt.param_rescale = [1.05, 0.05]  # mean and std in a gaussian distribution
+    opt.param_rescale = [0.90, 1.10]  # lower and upper in a uniform distribution
+    opt.modify_base = False
+    opt.min_size = 15
+    opt.ratio_dataset = 2
 
+    if opt.modify_base:
+        if len(opt.param_rescale) == 4:
+            opt.param_rescale = np.array([opt.param_rescale[:2], opt.param_rescale[2:]])
+        if len(opt.param_rescale) == 2:
+            opt.param_rescale = np.array(opt.param_rescale)
+        else:
+            raise "ERROR: Invalid size for param-distribution. Size must be either 2 or 4 not {:d}".format(len(
+                opt.param_rescale))
+
+    if len(opt.n_samples) == 1:
+        opt.n_samples += [opt.n_samples[0]]
+    assert len(opt.n_samples) == 2, "Invalid Dimensions for number of samples. You should introduce 2 values, at most, " \
+                                    "not {:d}".format(len(opt.n_samples))
+
+    opt.ext = '.png'
     main(opt.path_dataset, opt.path_annotations, opt.path_to_save, opt.ratio_dataset, opt.n_samples, opt.distribution,
          param_distribution=opt.param_distribution, param_scale=opt.param_rescale, modify=opt.modify_base, opt=opt)
