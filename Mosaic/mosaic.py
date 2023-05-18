@@ -1,7 +1,5 @@
 import os
 import cv2
-import json
-import shutil
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -799,26 +797,5 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
     np.random.seed(61116)
-    # opt.path_dataset = '/home/luis/datasets/wider/wider_val'  #
-    # opt.path_dataset_saving = '/home/luis/datasets/wider/wider_val2'
-    # opt.path_dataset_saving = '/home/luis/datasets/wider/mosaic_wider_face'
-
-    mode = 'train'
-    opt.path_dataset = '/home/luis/datasets/minneapple/{:s}'.format(mode)  #
-    opt.path_dataset_saving = '/home/luis/datasets/minneapple/{:s}3'.format(mode)  #
-    opt.path_dataset_annotations = '/home/luis/datasets/minneapple/annotations/instances_{:s}.json'.format(mode)
-
-    # dataset = 'train'
-    # mode = ''  # _ripe
-    # opt.path_dataset = '/home/luis/2021/COCO/cherry_dataset3/{:s}'.format(dataset)
-    # opt.path_dataset_saving = '/home/luis/2021/COCO/cherry_dataset3/{:s}3'.format(dataset)
-    # opt.path_dataset_annotations = '/home/luis/2021/COCO/cherry_dataset3/{:s}/instances_{:s}{:s}.json'.format(dataset,
-    #                                                                                                           dataset,
-    #                                                                                                           mode)
-
-    opt.img_size = [1280, 720]
-    opt.ratio = 2
-    opt.ext = 'png'
-
     create_dataset_mosaic(opt.path_dataset, opt.path_dataset_annotations, opt.path_dataset_saving,
                           opt.ratio, ext=opt.ext, size=opt.img_size)

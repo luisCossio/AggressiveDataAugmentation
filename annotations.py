@@ -174,9 +174,8 @@ def get_new_annotation(mask: np.ndarray, image_id: int, annotation_id: int, cate
 
             # "annotations" info
             polygons, segmentations = create_sub_mask_annotation(sub_mask)
-
             multi_poly = MultiPolygon(polygons)
-            if len(multi_poly.bounds) > 0:
+            if not multi_poly.is_empty:
                 annotation = create_annotation_format(multi_poly, segmentations, image_id,
                                                       category_id, annotation_id)
                 annotations += [annotation]

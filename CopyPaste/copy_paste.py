@@ -163,8 +163,6 @@ def fix_mask(mask):
             range_col2 = [col2 - margin_border, shape[1]]
             range_row2 = [max(0, i - margin_border), min(shape[0], i + margin_border)]
             update_mask_border(new_mask, range_row2, range_col2, i, col2)
-        # locs[i, col1] += 1  # DELETE
-        # locs[i, col2] += 1  # DELETE
     row1 = 0
     row2 = shape[0] - 1
 
@@ -260,7 +258,7 @@ class dataset_manager:
         # images
         self.path_images = path_dataset_images
         check_folder(self.path_images)
-        self.images = [self.coco.imgs[i]['file_name'] for i in range(len(self.coco.imgs))]
+        self.images = [img_info['file_name'] for i,img_info in self.coco.imgs.items()]
 
         self._path_imgs = [os.path.join(self.path_images, file) for file in self.images]
 
@@ -291,8 +289,6 @@ class dataset_manager:
         self.padding = grey_color
         self.min_size = min_size
 
-        # self.locations_map = np.zeros([1280,720],dtype=np.uint8) # DELETE
-        # self.verbose = False  # DELETE
 
     def build_mask(self, idx: int):
         """
@@ -341,25 +337,13 @@ class dataset_manager:
         -------
 
         """
-        if np.random.uniform() > 0.70:  # DELETE
-            focus_images = [380, 381, 382, 384, 385, 386, 397, 455, 456, 457, 461, 462, 464, 465, 467, 470, 478, 479,
-                            507, 509, 511, 512, 513, 514, 515, 516, 517, 518, 519]
-            random_index = np.random.choice(focus_images)  # DELETE
-        else:  # DELETE
-            random_index = np.random.randint(len(self.images))
         random_index = np.random.randint(len(self.images))
         image_base, mask_base, anns_base = self[random_index]  # anns do not include invalid anns (namely background)
-        # print("Image Base: {:d} - {:s} ".format(random_index, self.images[random_index])) # DELETE
         if modify:
             image_base, mask_base = self.transform(image_base, mask_base)
-        # if self.verbose:  # DELETE
-        #     print("Random image base {:d} : {:s}".format(random_index,self.images[random_index]))
         samples_in_image = len(anns_base)  # N objects
         n_samples2add = self.sampler(anns_base, range_samples)
-        # if n_samples_valid == 0:  # max number of instances is 255 # UNCOMMENT
-        #     return self.create_copy_pasted_masks(n_samples2add, modify, img_id, ann_id)
-        # unique = np.unique(mask_base)  # DELETE
-        # print("N labels: ",len(unique) - 1)  # DELETE
+
         categories = {0: 0}
         for i, ann in enumerate(anns_base):
             categories[i + 1] = ann['category_id']
@@ -369,10 +353,6 @@ class dataset_manager:
             # create new image
             new_image, new_mask, categories = self.add_figure(new_image, new_mask, samples_in_image + 1 + i,
                                                               categories, modify)
-            # if True:  # DELETE
-            #     unique = np.unique(new_mask) # DELETE
-            #     print("Samples after: {:d} \n Samples expected {:d}".format(len(unique),
-            #           int(samples_in_image + i + 1)))
         new_mask = fix_mask(new_mask)
         new_anns = an.get_new_annotation(new_mask, img_id, ann_id, categories)
         return new_image, new_mask, new_anns
@@ -446,12 +426,10 @@ class dataset_manager:
         if n_segments == 0:
             return self.add_figure(image, mask, intensity, categories, modify)
 
-        # if self.verbose:  # DELETE
-        #     print("Random image paste {:d} : {:s}".format(random_index,self.images[random_index]))
         random_segment_idx = np.random.randint(n_segments)
 
         position = self.get_pasting_location(np.array(image.shape)[:2], mask, intensity - 1)  # (y,x)
-        # print("Image selected Number {:d}, name {:s} ".format(random_segment,self.images[random_index]))  # DELETE
+
         # get range from the random segment.
         range_segment, random_segment_idx = self.get_range_segment(mask_copy, anns_copy, random_segment_idx)
         #  range_segment is organized as ((x1,x2),(y1,y2))
@@ -461,9 +439,6 @@ class dataset_manager:
         categories[intensity] = anns_copy[random_segment_idx]['category_id']
         image, mask = self.paste_segment(image, mask, image_copy, mask_copy, random_segment_idx + 1, intensity,
                                          pos_paste=position, range_copy=range_segment, modify=modify)
-        # if self.verbose1: # DELETE
-        #     unique = np.unique(mask)
-        #     print("Number of items in mask are: {:d}".format(len(unique)-1))  # DELETE
         return image, mask, categories
 
     def get_range_segment(self, mask: np.ndarray, annotations: list, segment_number: int):
@@ -555,9 +530,101 @@ def setup_new_dataset(path_to_save: str):
     return path_to_save_images
 
 
+def get_random_mask(annotation_file):
+    coco = COCO(annotation_file)
+    catIds = coco.getCatIds()
+    imgIds = coco.getImgIds()
+    print("catIds len:{}, imgIds len:{}".format(len(catIds), len(imgIds)))
+
+    random_img_id = np.random.randint(len(imgIds))
+    img = coco.loadImgs(random_img_id)[0]
+
+    annIds = coco.getAnnIds(imgIds=img['id'], catIds=catIds, iscrowd=None)
+    anns = coco.loadAnns(annIds)
+    if len(annIds) > 0:
+        random_ann = np.random.randint(len(annIds))
+        mask = coco.annToMask(anns[random_ann])
+
+    else:
+        mask = np.zeros([img['height'], img['width'], 3], dtype=np.uint8)
+    return mask, img['file_name']
+
+
+def get_mask(annotation_file, index, cats=[1], min_area=None):
+    coco = COCO(annotation_file)
+    indices_images = list(coco.imgs.keys())
+    img = coco.loadImgs(indices_images[index])[0]
+    annIds = coco.getAnnIds(imgIds=img['id'], catIds=cats, iscrowd=None)
+    print('annIds: ', annIds)
+    anns = coco.loadAnns(annIds)
+    mask = np.zeros([img['height'], img['width']], dtype=np.uint8)
+    print("Number anns: ", len(annIds))
+    if min_area is None:
+        for i in range(len(annIds)):
+            if anns[i]['category_id'] != 0:
+                segment = coco.annToMask(anns[i])
+                # print('mask shape',mask.shape)
+                # print('segment shape',segment.shape)
+                mask = np.where(segment != 0, i + 1, mask)
+    else:
+        for i in range(len(annIds)):
+            if anns[i]['category_id'] != 0:
+                if anns[i]['area'] > min_area:
+                    print(anns[i].keys())
+                    segment = coco.annToMask(anns[i])
+                    # print('mask shape',mask.shape)
+                    # print('segment shape',segment.shape)
+                    mask = np.where(segment != 0, i + 1, mask)
+
+    return mask, img['file_name']
+
+
+def dummy_funct():
+    import json
+    def load_file(path):
+        with open(path) as f:
+            lines = f.readlines()
+
+        data = []
+        for l in lines:
+            data += [json.loads(l)]
+        return data
+
+    # path_labels = 'sample_data/labels.json'
+    path_labels = 'new_images/instances_train.json'
+
+    # path_images = 'sample_data/images/'
+    path_images = 'new_images/images/'
+
+    data = load_file(path_labels)[0]
+    print("Number data: ", len(data['images']))
+
+    index = 3
+    print(index)
+    mask, name_img = get_mask(path_labels, index, cats=[0, 1, 2, 3, 4, 18, 17, 19, 22, 64], min_area=50)
+    print("name_img: ", name_img)
+    print("mask shape: ", mask.shape)
+    print("index: ", index)
+
+
+
 def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset: float,
          range_samples: list, distribution: str, param_distribution: list, param_scale: list,
          modify=True, name_anns='instances_train.json', opt=None):
+    """
+    :param path_dataset_img: path to images
+    :param path_anns: path to annotatinos
+    :param path_to_save: path to save the extended dataset
+    :param ratio_dataset: ratio of new images to create relative to the size of the original dataset
+    :param range_samples: range of samples
+    :param distribution: type of function to randomly generate (gaussian or uniform)
+    :param param_distribution: parameters of distributions (mean and std in case of gaussian dist.)
+    :param param_scale: parameter to rescale base image
+    :param modify: modify base and donor images
+    :param name_anns: name of .json file
+    :param opt:
+    :return:
+    """
     ignore_categories = opt.ignore_cat
     min_size = opt.min_size
     check_folder(path_to_save)
@@ -573,13 +640,9 @@ def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset
     images = []
     last_id_img, last_id_ann = manager.get_last_ids()
     path_to_save_anns = os.path.join(path_to_save, name_anns)
-    # check_folder('output/masks')  # DELETE
     last_id_img += 1
-    print("Categories IDS: ",manager.coco.cats)
     for i in tqdm(range(n_images)):
         image_id = i + last_id_img
-        # if i == 33: # DELETE
-        #     manager.verbose = True
         new_img, new_mask, new_annotation = manager.create_copy_pasted_image(range_samples, modify,
                                                                              image_id, last_id_ann + 1)
         name_file = "img_gen_{:04d}{:s}".format(i,opt.ext)
@@ -587,30 +650,15 @@ def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset
             last_id_ann = new_annotation[-1]['id']
         an.add_new_annotation(new_img, new_annotation, image_id, name_file, images, annotations)
         cv2.imwrite(os.path.join(path_to_save_images, name_file), new_img)
-        # if i == 33: # DELETE
-        #     manager.verbose = False
     an.save_new_dataset(path_dataset_img, images, annotations, path_anns, path_to_save_images, path_to_save_anns)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='copy_paste_augmentation.py',
                                      description='This is an implementation of copy-paste augmentation based on '
-                                                 'https://arxiv.org/abs/2012.07177v2. The dataset must be organized'
-                                                 'as: '
-                                                 '-dataset'
-                                                 '  -images'
-                                                 '      -image1.png'
-                                                 '      -image2.png'
-                                                 '      ...'
-                                                 '  -masks'
-                                                 '      -image1.png'
-                                                 '      -image2.png'
-                                                 '      ...'
-                                                 'Each mask is a PNG image that define each object with a unique color '
-                                                 'defined as and integer 0<=n<256 in a scale of gray.'
-                                                 ''
-                                                 'Each image new image is constructed from a base image and several '
-                                                 'instances.')
+                                                 'https://arxiv.org/abs/2012.07177v2. '
+                                                 'Each new image is constructed from a base image and several '
+                                                 'instances from donor images.')
 
     parser.add_argument('--path-dataset', type=str, help='path of the dataset')
     parser.add_argument('--path-annotations', default='/home/dataset/minneapple/annotations/instances_train.json',
@@ -622,8 +670,9 @@ if __name__ == '__main__':
     parser.add_argument('--ratio-dataset', type=float, default=2.00,
                         help='Percentage of images to create, relative to the original dataset size.')
 
-    parser.add_argument('--n-samples', nargs='+', type=int, default=[3, 15],
-                        help='Number samples to take from other images. If ')
+    parser.add_argument('--n-samples', nargs='+', default=[3, 15],
+                        help='Number samples to take from other images. If relative augments is True, then '
+                             'n_samples works relative to the amount of items in the base image', type=float)
 
     parser.add_argument('--distribution', type=str, default='uniform', choices=['gaussian', 'uniform'],
                         help='Type of distribution for distribute copy pasted images around the image.')
@@ -653,59 +702,21 @@ if __name__ == '__main__':
                         help='Min width and height dimension of BB')
 
     parser.add_argument('--modify-base', action='store_true', help='Modify the size of the image to copy from.')
-    parser.add_argument('--ignore-cat', nargs='+', type=float, default=[0],
+    parser.add_argument('--ignore-cat', nargs='+', type=float, default=[],
                         help='Class categories to not copy-paste. By default ignores only class 0/background.')
 
     parser.add_argument('--ext', type=str, default='.png',
                         help='Extension name for the images')
 
     opt = parser.parse_args()
-    np.random.seed(60006)
-    data_type = 'train'
-    datasets_path = '/home/luis/datasets/minneapple/'
-    # datasets_path = '/home/luis/2021/COCO/cherry_dataset3/'
-
-    base = os.path.join(datasets_path, data_type)
-    opt.path_dataset = os.path.join(base, 'images')
-    opt.path_to_save = "{:s}17".format(base)
-    opt.path_annotations = os.path.join(datasets_path, 'annotations', 'instances_{:s}.json'.format(data_type))
-    # opt.path_annotations = os.path.join(base, 'instances_{:s}.json'.format(data_type))
-    # opt.param_distribution = [0.5, 0.21, 0.42, 0.18]  # mean and variance in a gaussian distribution
-    # opt.param_distribution = [0.20, 0.66, 0.01, 0.99]  # mean and variance in a uniform distribution
-    opt.param_distribution = [0.01, 0.99, 0.01,
-                              0.99]  # mean and variance in a uniform distribution for relative augmentation ()
-    opt.distribution = 'uniform'
-    # opt.n_samples = [1, 5]
-    opt.n_samples = [0.00, 0.500]
-    opt.relative_augment = True
-    if len(opt.param_distribution) == 4:
-        opt.param_distribution = np.array([opt.param_distribution[:2], opt.param_distribution[2:]])
-    if len(opt.param_distribution) == 2:
-        opt.param_distribution = np.array(opt.param_distribution)
-    else:
-        raise "ERROR: Invalid size for param-distribution. Size must be either 2 or 4 not {:d}".format(len(
-            opt.param_distribution))
-
-    # opt.param_rescale = [1.05, 0.05]  # mean and std in a gaussian distribution
-    opt.param_rescale = [0.90, 1.10]  # lower and upper in a uniform distribution
-    opt.modify_base = False
-    opt.min_size = 15
-    opt.ratio_dataset = 2
-
-    if opt.modify_base:
-        if len(opt.param_rescale) == 4:
-            opt.param_rescale = np.array([opt.param_rescale[:2], opt.param_rescale[2:]])
-        if len(opt.param_rescale) == 2:
-            opt.param_rescale = np.array(opt.param_rescale)
-        else:
-            raise "ERROR: Invalid size for param-distribution. Size must be either 2 or 4 not {:d}".format(len(
-                opt.param_rescale))
-
+    np.random.seed(393)
+    # dummy_funct()
     if len(opt.n_samples) == 1:
         opt.n_samples += [opt.n_samples[0]]
     assert len(opt.n_samples) == 2, "Invalid Dimensions for number of samples. You should introduce 2 values, at most, " \
                                     "not {:d}".format(len(opt.n_samples))
 
-    opt.ext = '.png'
     main(opt.path_dataset, opt.path_annotations, opt.path_to_save, opt.ratio_dataset, opt.n_samples, opt.distribution,
          param_distribution=opt.param_distribution, param_scale=opt.param_rescale, modify=opt.modify_base, opt=opt)
+
+

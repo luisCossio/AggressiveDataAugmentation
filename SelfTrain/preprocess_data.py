@@ -134,5 +134,4 @@ if __name__ == '__main__':
     default_size = 1024
     np.random.seed(33339)
     main(path_dataset, save_folder, default_size)
-    # main2(path_dataset, save_folder, default_size)
-    # main3(path_dataset, save_folder)
+
