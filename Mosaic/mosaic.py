@@ -104,7 +104,7 @@ def xywh2xyxy_pixels(bounding_box: np.ndarray):
     x_pos1 = bounding_box[:, 0]
     x_pos2 = bounding_box[:, 0] + bounding_box[:, 2]
     y_pos1 = bounding_box[:, 1]
-    y_pos2 = bounding_box[:, 1] + bounding_box[:, 2]
+    y_pos2 = bounding_box[:, 1] + bounding_box[:, 3]
     x_pos1, x_pos2, y_pos1, y_pos2 = np.around(x_pos1), np.around(x_pos2), np.around(y_pos1), np.around(y_pos2)
     return x_pos1, x_pos2, y_pos1, y_pos2
 
@@ -131,47 +131,67 @@ def xyxy2xywh_positions(bounding_box: np.ndarray, image_shape: np.ndarray):
     return labels
 
 
-def top_right_annotator(image_shape, donator_shape):
+def top_left_offset_annotation(image_shape, donor_shape):
     return np.array([0, 0])
 
+def bottom_left_offset_annotation(image_shape, donor_shape):
+    return np.array([0, image_shape[0] - donor_shape[0]])
 
-def bottom_right_annotator(image_shape, donator_shape):
-    return np.array([0, image_shape[1] - donator_shape[1]])
+def top_rigth_offset_annotation(image_shape, donor_shape):
+    return np.array([image_shape[1] - donor_shape[1], 0])
 
-
-def bottom_right_annotator(image_shape, donator_shape):
-    return np.array([image_shape[0] - donator_shape[0], 0])
-
-
-def bottom_left_annotator(image_shape, donator_shape):
-    return np.array([image_shape[0] - donator_shape[0], image_shape[1] - donator_shape[1]])
+def bottom_right_offset_annotation(image_shape, donor_shape):
+    return np.array([image_shape[1] - donor_shape[1], image_shape[0] - donor_shape[0]])
+    # return np.array([image_shape[0] - donor_shape[0], image_shape[1] - donor_shape[1]])
 
 
 def modify_segments(segments, offset):
     n_segments = len(segments)
+    new_segments = []
     for i in range(n_segments):
+        new_segments += [[]]
         points = len(segments[i]) // 2
         for j in range(points):
-            segments[i][2 * j] += offset[0]
-            segments[i][2 * j + 1] += offset[1]
-    return segments
+            # segments[i][2 * j] += offset[0]
+            # segments[i][2 * j + 1] += offset[1]
+
+            new_segments[i] += [segments[i][2 * j] + offset[0]]
+            new_segments[i] += [segments[i][2 * j + 1] + offset[1]]
+    return new_segments
 
 
-def update_annotation(ann: dict, image_shape: np.ndarray, donator_shape: np.ndarray, image_id: int, corner: str):
-    if corner == "TR":
-        offfset = top_right_annotator(image_shape, donator_shape)
-    elif corner == "BR":
-        offfset = bottom_right_annotator(image_shape, donator_shape)
-    elif corner == "TL":
-        offfset = top_right_annotator(image_shape, donator_shape)
-    else:
-        offfset = bottom_left_annotator(image_shape, donator_shape)
+def update_annotation(ann: dict, image_id: int,
+                      offfset: np.ndarray):
+    segmentation = modify_segments(ann['segmentation'], offfset)
+    area = ann['area']
+    bbox = ann['bbox'].copy()
+    bbox[0] += offfset[0]
+    bbox[1] += offfset[1]
+    category_id = ann['category_id']
+    id = ann['id']
+    new_ann = {
+        "segmentation": segmentation,
+        "area": area,
+        "iscrowd": 0,
+        "image_id": image_id,
+        "bbox": bbox,
+        "category_id": category_id,
+        "id": id
+    }
 
-    ann['segmentation'] = modify_segments(ann['segmentation'], offfset)
-    ann['bbox'][0] += offfset[0]
-    ann['bbox'][1] += offfset[1]
-    ann['image_id'] = image_id
-    return ann
+    # ann['segmentation'] = modify_segments(ann['segmentation'].copy(), offfset)
+    # ann['bbox'][0] += offfset[0]
+    # ann['bbox'][1] += offfset[1]
+    # ann['image_id'] = image_id
+    return new_ann
+
+
+def get_local_position_donor(positions_mosaic, size_local, size_global):
+    pos_local = size_local - size_global + positions_mosaic
+    pos_local = pos_local[pos_local >= 0]
+    pos_local = pos_local[pos_local < size_local]
+    return pos_local
+
 
 
 class mosaic_generator:
@@ -183,7 +203,7 @@ class mosaic_generator:
         self.catIds = self.coco.getCatIds()
         self.imgIds = self.coco.getImgIds()
         self.invalid_categories = invalid_cats
-        self.path_images = os.path.join(path_dataset, 'images')
+        self.path_images = path_dataset
 
         self.images = [self.coco.imgs[i]['file_name'] for i in range(len(self.coco.imgs))]
         self._path_imgs = [os.path.join(self.path_images, file) for file in self.images]
@@ -215,7 +235,7 @@ class mosaic_generator:
         for ann in anns_img:
             if not (ann['category_id'] in self.invalid_categories):
                 bb += [ann['bbox']]
-                val_ids += [ann]
+                val_ids += [ann.copy()]
         bb = np.array(bb).reshape([-1, 4])
         return bb, val_ids
 
@@ -246,16 +266,9 @@ class mosaic_generator:
         new_images = []
         new_annotations = []
 
-        # check_locations = [38]  # DELETE
-        for i in tqdm(range(new_dataset_size)):  # DELETE
-            # if i in check_locations:  # DELETE
-            #     print("Index to check : ", i)
-            #     check_locations.pop(0)
-            #     self.verbose = True
-            # else:
-            #     self.verbose = False
+        for i in tqdm(range(new_dataset_size)):
             img, ann_img = self.get_new_image(valid_images_indexes, i + self.n_images)
-            name = "mosaic_img_{:06d}.{:s}".format(i, ext)
+            name = "mosaic_img_{:06d}{:s}".format(i, ext)
             an.add_new_annotation(img, ann_img, i + self.n_images, name, new_images, new_annotations)
             self.save_image_mosaic(img, name)
         new_annotations = normalize_annotations_indices(new_annotations, annotation_id=len(self.coco.anns))
@@ -286,15 +299,13 @@ class mosaic_generator:
 
         range_horizontal2, range_vertical2, index_image2 = self.get_ranges_bottom_left(range_horizontal1,
                                                                                        range_vertical1)
-        range_horizontal3, range_vertical3, index_image3 = self.get_ranges_top_right(range_horizontal2)
-        range_horizontal4, range_vertical4, index_image4 = self.get_ranges_bottom_right(range_horizontal3,
-                                                                                        range_vertical3)
+        if index_image2 == -1:
+            valid_images_indexes.remove(index_image1)
+            return self.get_new_image(valid_images_indexes, new_image_index)
+
+        index_image3, index_image4, range_horizontal4, range_vertical4 = self.get_right_side(range_horizontal2)
 
         indexes_found = [index_image1, index_image2, index_image3, index_image4]
-        # if self.verbose: # DELETE
-        #     print("Indices used: ", indexes_found)
-        #     names = [self.images[idx] for idx in indexes_found]
-        #     print("image names: ",names)
         img = np.empty([self.sizes[0], self.sizes[1], 3], dtype=np.uint8)
 
         cut_locations = get_cut_location(range_horizontal4, range_vertical4)
@@ -312,6 +323,23 @@ class mosaic_generator:
         self.paste_image(img, indexes_found[0], cut_locations, new_annotations, new_image_index, corner="TL")
 
         return img, new_annotations
+
+    def get_right_side(self, range_horizontal:np.ndarray):
+        """
+        Array of locations for the final mosaic image.
+        :param range_horizontal: Range Horizontal is the range of values in the x-axis (width) to matched with new
+        images.
+
+        :return:
+        """
+        range_horizontal3, range_vertical3, index_image3 = self.get_ranges_top_right(range_horizontal)
+        range_horizontal4, range_vertical4, index_image4 = self.get_ranges_bottom_right(range_horizontal3,
+                                                                                        range_vertical3)
+        while index_image4 == -1:
+            range_horizontal3, range_vertical3, index_image3 = self.get_ranges_top_right(range_horizontal)
+            range_horizontal4, range_vertical4, index_image4 = self.get_ranges_bottom_right(range_horizontal3,
+                                                                                            range_vertical3)
+        return index_image3, index_image4, range_horizontal4, range_vertical4
 
     def get_ranges_top_left(self, index):
         """
@@ -331,8 +359,8 @@ class mosaic_generator:
         img, bounding_boxes, annotations = self[index]
 
         shape = img.shape
-        limits_height_lower, limits_height_upper = self.sizes[0] // 8, self.sizes[0] // 8 * 7
-        limits_width_lower, limits_width_upper = self.sizes[1] // 8, self.sizes[1] // 8 * 7
+        limits_height_lower, limits_height_upper = int(self.sizes[0] * 0.1) , int(self.sizes[0] * 0.9)
+        limits_width_lower, limits_width_upper =  int(self.sizes[1] * 0.1) , int(self.sizes[1] * 0.9)
 
         limits_height_upper = min(shape[0], limits_height_upper)
         limits_width_upper = min(shape[1], limits_width_upper)
@@ -362,14 +390,14 @@ class mosaic_generator:
             range_y = np.arange(random_pos_i, random_pos_i + self.ranges_size)
         return range_x, range_y
 
-    def get_ranges_bottom_left(self, range_horizontal, range_vertical):
+    def get_ranges_bottom_left(self, range_horizontal: np.ndarray, range_vertical: np.ndarray):
         """
         Method to get ranges valid for columns and ros to cut a given image.
         Returns valid ranges plus the index of the corresponding image.
         Parameters
         ----------
-        range_horizontal : ndarray
-        range_vertical: ndarray
+        range_horizontal : range in width
+        range_vertical: range in height
 
         Returns
         -------
@@ -378,23 +406,36 @@ class mosaic_generator:
         """
         not_found_yet = True
         random_index = 0
-
+        attempts = 0
         while not_found_yet:
             random_img, random_anns, random_index, x_pos1, x_pos2, y_pos1, y_pos2 = self.get_random_coordinates()
             image_shape = random_img.shape
 
-            range_vertical_local = image_shape[0] - self.sizes[0] + range_vertical
+            range_vertical_local = get_local_position_donor(range_vertical, image_shape[0], self.sizes[0])
 
-            if range_vertical_local[0] > 0:
-                range_y = self.extract_valid_range_y_from_range(range_vertical_local, range_horizontal[-1],
-                                                                x_pos1, x_pos2, y_pos1, y_pos2, corner="BL")
+            if len(range_vertical_local) == 0:
+                continue
+            range_horizontal_local = range_horizontal[range_horizontal < image_shape[1]]
+            # range_horizontal_local = get_global_position(range_horizontal, image_shape[1], self.sizes[1])
+            #
+            # if len(range_horizontal_local) == 0:
+            #     continue
 
-                if len(range_y) > 0:
-                    range_x = self.extract_valid_range_x_from_range(range_horizontal, range_y[0], x_pos1, x_pos2,
-                                                                    y_pos1, y_pos2, corner="BL")
 
-                    if len(range_x) > 0:
-                        not_found_yet = False
+            range_y = self.extract_valid_range_y_from_range(range_vertical_local, range_horizontal_local[-1],
+                                                            x_pos1, x_pos2, y_pos1, y_pos2, corner="BL")
+
+            if len(range_y) > 0:
+
+
+                range_x = self.extract_valid_range_x_from_range(range_horizontal_local, range_y[0], x_pos1, x_pos2,
+                                                                y_pos1, y_pos2, corner="BL")
+                if len(range_x) > 0:
+                    not_found_yet = False
+
+            attempts += 1
+            if attempts > 100:
+                return np.array([]),np.array([]),-1
 
         range_y = self.sizes[0] - image_shape[0] + range_y
         return range_x, range_y, random_index
@@ -408,9 +449,12 @@ class mosaic_generator:
             random_img, random_anns, random_index, x_pos1, x_pos2, y_pos1, y_pos2 = self.get_random_coordinates()
 
             image_shape = random_img.shape
-            range_horizontal_local = image_shape[1] - self.sizes[1] + range_horizontal
+            range_horizontal_local = get_local_position_donor(range_horizontal, image_shape[1], self.sizes[1])
 
-            limits_height_lower, limits_height_upper = self.sizes[0] // 8, self.sizes[0] // 8 * 7
+            if len(range_horizontal_local) == 0:
+                continue
+
+            limits_height_lower, limits_height_upper = int(self.sizes[0] * 0.1), int(self.sizes[0]*0.9) # we want to be at least at little far away from the border
             limits_height_upper = min(image_shape[0], limits_height_upper)
 
             random_row = self.get_mosaic_cut(limits_height_lower, limits_height_upper)
@@ -433,6 +477,7 @@ class mosaic_generator:
 
                     if len(range_x) > 0:
                         not_found_yet = False
+
         range_x = self.sizes[1] - image_shape[1] + range_x
         return range_x, range_y, random_index
 
@@ -445,27 +490,36 @@ class mosaic_generator:
     def get_ranges_bottom_right(self, range_horizontal, range_vertical):
         not_found_yet = True
         random_index = 0
-
+        attempts = 0
         while not_found_yet:
 
             random_img, random_anns, random_index, x_pos1, x_pos2, y_pos1, y_pos2 = self.get_random_coordinates()
             image_shape = random_img.shape
-            range_vertical_local = image_shape[0] - self.sizes[0] + range_vertical
-            range_horizontal_local = image_shape[1] - self.sizes[1] + range_horizontal
+            range_vertical_local = get_local_position_donor(range_vertical, image_shape[0], self.sizes[0])
 
-            if range_horizontal_local[0] > 0 and range_vertical_local[0] > 0:
-                range_y = self.extract_valid_range_y_from_range(range_vertical_local, range_horizontal_local[0],
-                                                                x_pos1, x_pos2, y_pos1, y_pos2, corner="BR")
+            if len(range_vertical_local) == 0:
+                continue
 
-                if len(range_y) > 0:
-                    range_x = self.extract_valid_range_x_from_range(range_horizontal_local, range_y[0], x_pos1,
-                                                                    x_pos2,
-                                                                    y_pos1,
-                                                                    y_pos2,
-                                                                    corner="BR")
+            range_horizontal_local = get_local_position_donor(range_horizontal, image_shape[1], self.sizes[1])
 
-                    if len(range_x) > 0:
-                        not_found_yet = False
+            if len(range_horizontal_local) == 0:
+                continue
+
+            range_y = self.extract_valid_range_y_from_range(range_vertical_local, range_horizontal_local[0],
+                                                            x_pos1, x_pos2, y_pos1, y_pos2, corner="BR")
+
+            if len(range_y) > 0:
+                range_x = self.extract_valid_range_x_from_range(range_horizontal_local, range_y[0], x_pos1,
+                                                                x_pos2,
+                                                                y_pos1,
+                                                                y_pos2,
+                                                                corner="BR")
+
+                if len(range_x) > 0:
+                    not_found_yet = False
+            attempts += 1
+            if attempts > 100:
+                return np.array([]), np.array([]), -1
 
         range_y = self.sizes[0] - image_shape[0] + range_y
         range_x = self.sizes[1] - image_shape[1] + range_x
@@ -512,7 +566,10 @@ class mosaic_generator:
             next_row += increase
             count += 1
         next_row -= increase
-        range_y = sorted([row, next_row])
+        if next_row == row:
+            return np.empty([0],dtype=np.int32)
+        range_y = sorted([row, max(0, next_row)])
+
         range_y = np.arange(range_y[0], range_y[1] + 1)
         return range_y
 
@@ -557,8 +614,10 @@ class mosaic_generator:
             next_col += increase
             count += 1
 
-        next_col -= increase * 2
-        range_x = sorted([col, next_col])
+        next_col -= increase # increase * 2
+        if next_col == col:
+            return np.empty([0],dtype=np.int32)
+        range_x = sorted([col,  max(0, next_col)])
         range_x = np.arange(range_x[0], range_x[1] + 1)
         return range_x
 
@@ -707,7 +766,6 @@ class mosaic_generator:
                                  np.array(shape_donator), corner)
 
     def save_image_mosaic(self, img, name):
-
         img_file = os.path.join(self.path_save_images, name)
         cv2.imwrite(img_file, img)
 
@@ -728,10 +786,19 @@ class mosaic_generator:
         -------
 
         """
+        if corner == "TR":
+            offfset = top_rigth_offset_annotation(image_shape, donator_shape)
+        elif corner == "BR":
+            offfset = bottom_right_offset_annotation(image_shape, donator_shape)
+        elif corner == "TL":
+            offfset = top_left_offset_annotation(image_shape, donator_shape)
+        else:
+            offfset = bottom_left_offset_annotation(image_shape, donator_shape)
+
         for i, ann in enumerate(old_annotations):
             if valid_positions[i]:
                 # if not(ann['category_id'] in self.invalid_categories):
-                annotations += [update_annotation(ann.copy(), image_shape, donator_shape, index_img, corner=corner)]
+                annotations += [update_annotation(ann, index_img, offfset=offfset)]
 
     def save_labels_yolo(self, labels_file, annotations: np.ndarray):
         """
@@ -779,23 +846,28 @@ def create_dataset_mosaic(path_dataset, path_annotations, path_to_save, ratio_im
     Returns
     -------
     """
-    mosaic = mosaic_generator(path_dataset, path_annotations=path_annotations, path_save=path_to_save, size_image=size)
+    mosaic = mosaic_generator(path_dataset, path_annotations=path_annotations, path_save=path_to_save, size_image=size,
+                              ranges_size=200)
     mosaic.create_dataset(ratio_images, ext)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path-dataset', type=str, default='', help='path to original dataset')
-    parser.add_argument('--path-dataset-saving', type=str, default='', help='path to dataset to save to')
+    parser.add_argument('--path-dataset', type=str, default='', help='path to original ')
+    parser.add_argument('--path-annotations', type=str, default='', help='path to original dataset')
+    parser.add_argument('--path-to-save', type=str, default='', help='path to dataset to save to')
     parser.add_argument('--img-size', nargs='+', type=int, default=[1024, 1024], help='train,test sizes')
-    parser.add_argument('--ratio', type=float, default=2.0, help='Ratio of size of new dataset in comparison'
+
+    parser.add_argument('--ratio-dataset', type=float, default=2.0, help='Ratio of size of new dataset in comparison'
                                                                  'to the original')
-    parser.add_argument('--ext', type=str, default='png', choices=['png', 'jpg', 'JPG'],
+
+    parser.add_argument('--ext', type=str, default='png', choices=['.png', '.jpg', '.JPG'],
                         help='Extension to which save the files.')
+
     parser.add_argument('--mask', action='store_true',
                         help='Save mask files as well.')
 
     opt = parser.parse_args()
-    np.random.seed(61116)
-    create_dataset_mosaic(opt.path_dataset, opt.path_dataset_annotations, opt.path_dataset_saving,
-                          opt.ratio, ext=opt.ext, size=opt.img_size)
+    np.random.seed(999)
+    create_dataset_mosaic(opt.path_dataset, opt.path_annotations, opt.path_to_save,
+                          opt.ratio_dataset, ext=opt.ext, size=opt.img_size)

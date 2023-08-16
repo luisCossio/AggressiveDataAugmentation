@@ -6,10 +6,31 @@ This repo serve as an all in place tool for offline data augmentation of three p
 
 
 Each augmentation method can be used by providing a .json file with a coco-like format and the corresponding images. 
-This algorithm were implemented to allow easy augmentation of existing dataset. 
+This algorithm were implemented to allow easy augmentation of existing dataset. This repository provides a samples dataset for testing porpoises, using images from the COCO dataset. 
 
 
+# Mosaic Augmentation
+This method propose in the [YOLOv4](https://arxiv.org/pdf/2004.10934.pdf) paper, and consist of combining images and their respective labels
+by making a mosaic of 4 different images.
+![Mosaic example](resources/pixel_transplant_mosaic.jpg)
 
+Labels are accordingly placed in the resulting positions. 
+
+
+## Usage
+
+To generate a simple dataset from an existing one you can use the next command:
+```sh
+--path-dataset sample_data/images --path-annotations sample_data/labels.json --path-to-save new_images --ratio-dataset 0.20 --img-size 480 480 --ext .jpg
+```
+
+There are three relevant parameters to customize the a dataset. These parameters are:
+- ratio-dataset: this allows to define the number of images to be generated, and its propotional to eh size of the original dataset. A ratio-dataset of 1.0 means to generate as many copy-pasted images as the images in the original dataset
+- img-size: Size of images to generate
+- ext: name of the extension of the images to be used (Ex: .jpg, .png)
+
+
+Its worth pointing out that it should be avoided the usage of this method in datasets with big objects, since slicing through objects is not implemented. Objects are avoided to be cut in the mosaic process as to not lose data for small size objects. Further problems can be caused by using an image size too big in comparison with the size found in the original dataset, since very few images will match with each other.
 
 # Copy Paste usage
 Copy-Paste augmentation is an augmentation method that add's objects from a donor image to a random location in a donor 
@@ -23,7 +44,7 @@ object detection models.
 
 
 ## Usage
-To generate a simple dataset from a existing one you can use the next command
+To generate a simple dataset from an existing one you can use the next command:
 ```sh
 python CopyPaste/copy_paste.py --path-dataset sample_data/images --path-annotations sample_data/labels.json --path-to-save new_images --ratio-dataset 1.0 --n-samples 1 3 --ext .jpg
 ```
@@ -46,3 +67,4 @@ The next command is an example of how to define a relative augmentation.
 ```sh
 python CopyPaste/copy_paste.py --path-dataset sample_data/images --path-annotations sample_data/labels.json --path-to-save new_images --modify-base --ratio-dataset 1.0 --relative-augment --n-samples 0.1 0.2 --ext .jpg
 ```
+

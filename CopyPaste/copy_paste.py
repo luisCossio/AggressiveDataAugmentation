@@ -481,13 +481,6 @@ class dataset_manager:
 
         """
         shape1 = image_base.shape
-        # if modify:
-        #     image_donor, mask_donor = self.transform(image_donor[range_copy[0][0]:range_copy[0][1],
-        #                                              range_copy[1][0]:range_copy[1][1], :],
-        #                                              mask_donor[range_copy[0][0]:range_copy[0][1],
-        #                                              range_copy[1][0]:range_copy[1][1]])
-        #     mask_donor = fix_mask(mask_donor)
-        # else:
         image_donor = image_donor[range_copy[0][0]:range_copy[0][1], range_copy[1][0]:range_copy[1][1], :]
         mask_donor = mask_donor[range_copy[0][0]:range_copy[0][1], range_copy[1][0]:range_copy[1][1]]
         shape2 = image_donor.shape
@@ -577,35 +570,6 @@ def get_mask(annotation_file, index, cats=[1], min_area=None):
                     mask = np.where(segment != 0, i + 1, mask)
 
     return mask, img['file_name']
-
-
-def dummy_funct():
-    import json
-    def load_file(path):
-        with open(path) as f:
-            lines = f.readlines()
-
-        data = []
-        for l in lines:
-            data += [json.loads(l)]
-        return data
-
-    # path_labels = 'sample_data/labels.json'
-    path_labels = 'new_images/instances_train.json'
-
-    # path_images = 'sample_data/images/'
-    path_images = 'new_images/images/'
-
-    data = load_file(path_labels)[0]
-    print("Number data: ", len(data['images']))
-
-    index = 3
-    print(index)
-    mask, name_img = get_mask(path_labels, index, cats=[0, 1, 2, 3, 4, 18, 17, 19, 22, 64], min_area=50)
-    print("name_img: ", name_img)
-    print("mask shape: ", mask.shape)
-    print("index: ", index)
-
 
 
 def main(path_dataset_img: str, path_anns: str, path_to_save: str, ratio_dataset: float,
