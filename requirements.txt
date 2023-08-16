@@ -1,0 +1,8 @@
+pycocotools>=2.0.2
+tqdm
+numpy>=1.20.0
+argparse
+opencv-python
+google_images_download
+shutils
+shapely
